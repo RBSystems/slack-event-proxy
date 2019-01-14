@@ -1,116 +1,18 @@
-package handlers
+package main
 
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/byuoitav/central-event-system/hub/base"
 	"github.com/byuoitav/common/log"
-	"github.com/byuoitav/common/nerr"
 	"github.com/byuoitav/common/v2/events"
-	"github.com/byuoitav/touchpanel-ui-microservice/helpers"
-	"github.com/byuoitav/touchpanel-ui-microservice/socket"
 	"github.com/labstack/echo"
 )
-
-func init() {
-	var err *nerr.E
-	messenger, err = messenger.BuildMessenger(os.Getenv("HUB_ADDRESS"), base.Messenger, 1000)
-	if err != nil {
-		log.L.Errorf("unable to build the messenger: %s", err.Error())
-	}
-
-	messenger.SubscribeToRooms(deviceInfo.RoomID)
-
-}
-
-var messenger *messenger.Messenger
-
-func GetHostname(context echo.Context) error {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return context.JSON(http.StatusInternalServerError, err.Error())
-	}
-
-	return context.JSON(http.StatusOK, hostname)
-}
-
-func GetPiHostname(context echo.Context) error {
-	hostname := os.Getenv("SYSTEM_ID")
-	return context.JSON(http.StatusOK, hostname)
-}
-
-func GetDeviceInfo(context echo.Context) error {
-	di, err := helpers.GetDeviceInfo()
-	if err != nil {
-		return context.JSON(http.StatusBadRequest, err.Error())
-	}
-
-	return context.JSON(http.StatusOK, di)
-}
-
-func Reboot(context echo.Context) error {
-	log.L.Warnf("[management] Rebooting pi")
-	http.Get("http://localhost:7010/reboot")
-	return nil
-}
-
-func GetDockerStatus(context echo.Context) error {
-	log.L.Warnf("[management] Getting docker status")
-	resp, err := http.Get("http://localhost:7010/dockerStatus")
-	log.L.Warnf("docker status response: %v", resp)
-	if err != nil {
-		return context.JSON(http.StatusBadRequest, err.Error())
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return context.JSON(http.StatusBadRequest, err.Error())
-	}
-
-	return context.String(http.StatusOK, string(body))
-}
-
-// GenerateHelpFunction generates an echo handler that handles help requests.
-func GenerateHelpFunction(value string, messenger *messenger.Messenger) func(ctx echo.Context) error {
-	return func(ctx echo.Context) error {
-		deviceInfo := events.GenerateBasicDeviceInfo(os.Getenv("SYSTEM_ID"))
-
-		// send an event requesting help
-		event := events.Event{
-			GeneratingSystem: deviceInfo.DeviceID,
-			Timestamp:        time.Now(),
-			EventTags: []string{
-				events.Alert,
-			},
-			TargetDevice: deviceInfo,
-			AffectedRoom: events.GenerateBasicRoomInfo(deviceInfo.RoomID),
-			Key:          "help-request",
-			Value:        value,
-			User:         ctx.RealIP(),
-			Data:         nil,
-		}
-
-		log.L.Warnf("Sending event to %s help. (event: %+v)", value, event)
-		messenger.SendEvent(event)
-
-		return ctx.String(http.StatusOK, fmt.Sprintf("Help has been %sed", value))
-	}
-}
-
-/*TODO
-1.) Make a relevant struct that holds all the info needed
-2.) Ask Joe how to upsert the record (assuming things worked well)
-3.) Make sure that the records are in proper form and that they can be interpreted into metrics
-*/
 
 //Creates the dialog for Slack
 func Help(context echo.Context) error {
@@ -127,14 +29,14 @@ func Help(context echo.Context) error {
 
 	// build json payload
 	// Overarching Structure
-	var ud helpers.UserDialog
+	var ud UserDialog
 	// dialog
-	var dialog helpers.Dialog
+	var dialog Dialog
 	dialog.Title = "Gondor calls for aid!"
 	// elements
-	var elemOne helpers.Element
-	var elemTwo helpers.Element
-	var elemThree helpers.Element
+	var elemOne Element
+	var elemTwo Element
+	var elemThree Element
 
 	elemOne.Name = "roomID"
 	elemOne.Label = "Room"
@@ -180,7 +82,7 @@ func Help(context echo.Context) error {
 }
 
 //What happens after 'Submit' is hit on the /avcall command
-func HandleDialog(context echo.Context) error {
+func HandleSlack(context echo.Context) error {
 	//Necessary to read the request
 	context.Request().ParseForm()
 	//Find the payload amid the context
@@ -199,7 +101,7 @@ func HandleDialog(context echo.Context) error {
 	techName := r4.FindStringSubmatch(payload)[1]
 
 	log.L.Infof("[Follow Up] Trying to find stuff: %v ---------- %v", roomID, notes)
-	var sh helpers.SlackHelp
+	var sh SlackHelp
 	sh.Building = strings.Split(roomID, "-")[0]
 	sh.Room = roomID
 	sh.Notes = notes
@@ -215,9 +117,8 @@ func HandleDialog(context echo.Context) error {
 }
 
 //Creates the Alert
-func CreateAlert(sh helpers.SlackHelp) error {
-
-	var helpData helpers.HelpData
+func CreateAlert(sh SlackHelp) error {
+	var helpData HelpData
 	helpData.TechName = sh.TechName
 	helpData.Notes = sh.Notes
 	helpData.Building = sh.Building
@@ -231,7 +132,8 @@ func CreateAlert(sh helpers.SlackHelp) error {
 		EventTags:        []string{events.HelpRequest},
 		Data:             helpData,
 	}
-	socket.H.WriteToSockets(e)
+	messenger := GetMessenger()
+	messenger.SendEvent(e)
 
 	return nil
 }
